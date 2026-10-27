@@ -1,0 +1,6 @@
+{
+  "name": "FixMyCampus 2.0",
+  "description": "AI-Powered Campus Issue Management System for university faculty reporting, automated classification, smart prioritization, and resolution tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

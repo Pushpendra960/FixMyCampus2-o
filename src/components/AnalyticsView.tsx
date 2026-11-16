@@ -17,10 +17,81 @@ interface AnalyticsViewProps {
 }
 
 export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) => {
-  // 1. Most Problematic Rooms
+  const SLA_TARGET_HOURS = 4;
+
+  // Compute actual resolution metrics from tickets with valid timestamps
+  const slaMetrics = useMemo(() => {
+    const parseResolutionHours = (t: CampusTicket): number | null => {
+      if (!t.resolution?.resolvedAt || !t.reportedAt) return null;
+      const start = Date.parse(t.reportedAt);
+      const end = Date.parse(t.resolution.resolvedAt);
+      if (isNaN(start) || isNaN(end) || end < start) return null;
+      return (end - start) / (1000 * 60 * 60);
+    };
+
+    const resolvedDurations: number[] = [];
+    const byDept: Record<string, number[]> = {};
+
+    for (const t of tickets) {
+      const hrs = parseResolutionHours(t);
+      if (hrs !== null) {
+        resolvedDurations.push(hrs);
+        const dept = t.recommendedDepartment || 'General Administration';
+        if (!byDept[dept]) byDept[dept] = [];
+        byDept[dept].push(hrs);
+      }
+    }
+
+    const withinSlaCount = resolvedDurations.filter((h) => h <= SLA_TARGET_HOURS).length;
+    const compliancePct =
+      resolvedDurations.length > 0
+        ? Math.round((withinSlaCount / resolvedDurations.length) * 1000) / 10
+        : null;
+
+    const avgFor = (deptKey: string): string => {
+      const list = byDept[deptKey] || [];
+      if (list.length === 0) return 'No data';
+      const avg = list.reduce((a, b) => a + b, 0) / list.length;
+      return `${avg.toFixed(1)} Hours`;
+    };
+
+    return {
+      compliancePct,
+      resolvedSampleCount: resolvedDurations.length,
+      suppliesAvg: avgFor('Classroom Supplies'),
+      itAvAvg: avgFor('IT / Audio-Visual Support'),
+      housekeepingAvg: avgFor('Housekeeping'),
+      facilitiesAvg: avgFor('Facilities / Maintenance'),
+    };
+  }, [tickets]);
+
+  // 1. Most Problematic Rooms (merge static catalog with live ticket counts)
   const rankedRooms = useMemo(() => {
-    return [...rooms].sort((a, b) => b.totalIncidents - a.totalIncidents);
-  }, [rooms]);
+    const map = new Map<string, { roomNumber: string; building: string; totalIncidents: number; equipment: string[] }>();
+    for (const r of rooms) {
+      map.set(r.roomNumber.toLowerCase(), {
+        roomNumber: r.roomNumber,
+        building: r.building,
+        totalIncidents: 0,
+        equipment: r.equipment,
+      });
+    }
+    for (const t of tickets) {
+      const key = t.roomNumber.toLowerCase();
+      const existing = map.get(key);
+      if (existing) {
+        existing.totalIncidents += 1;
+      } else {
+        map.set(key, {
+          roomNumber: t.roomNumber,
+          building: t.building,
+          totalIncidents: 1,
+          equipment: [t.category],
+        });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => b.totalIncidents - a.totalIncidents);
+  }, [tickets, rooms]);
 
   // 2. Department Breakdown
   const departmentCounts = useMemo(() => {
@@ -62,12 +133,20 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
               Campus Infrastructure Analytics & SLA Performance
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Live intelligence aggregated across academic halls, labs, and faculty spaces.
+              Aggregated dynamically across {tickets.length} tracked ticket(s) (4h SLA target).
             </p>
           </div>
           <div className="flex items-center gap-2 text-xs">
-            <span className="font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded border border-emerald-200">
-              Overall SLA Compliance: 94.8%
+            <span
+              className={`font-semibold px-2.5 py-1 rounded border ${
+                slaMetrics.compliancePct !== null
+                  ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                  : 'text-slate-600 bg-slate-50 border-slate-200'
+              }`}
+            >
+              {slaMetrics.compliancePct !== null
+                ? `Overall SLA Compliance: ${slaMetrics.compliancePct}% (${slaMetrics.resolvedSampleCount} resolved)`
+                : 'Overall SLA Compliance: N/A (0 resolved timestamps)'}
             </span>
           </div>
         </div>
@@ -80,8 +159,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
             <span>Classroom Supplies SLA</span>
             <Clock className="w-4 h-4 text-emerald-600" />
           </div>
-          <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">2.1 Hours</div>
-          <p className="text-[11px] text-slate-500 mt-1">Average podium restock dispatch</p>
+          <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">{slaMetrics.suppliesAvg}</div>
+          <p className="text-[11px] text-slate-500 mt-1">Measured podium restock time</p>
         </div>
 
         <div className="p-4 bg-white rounded-lg border border-slate-200">
@@ -89,17 +168,17 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
             <span>IT & AV Support SLA</span>
             <Clock className="w-4 h-4 text-blue-600" />
           </div>
-          <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">4.2 Hours</div>
-          <p className="text-[11px] text-slate-500 mt-1">Projector & audio triage time</p>
+          <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">{slaMetrics.itAvAvg}</div>
+          <p className="text-[11px] text-slate-500 mt-1">Measured projector & AV triage</p>
         </div>
 
         <div className="p-4 bg-white rounded-lg border border-slate-200">
           <div className="flex items-center justify-between text-slate-500 text-xs mb-1">
-            <span>Plumbing & Sanitation</span>
+            <span>Housekeeping & Sanitation</span>
             <Clock className="w-4 h-4 text-cyan-600" />
           </div>
-          <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">3.5 Hours</div>
-          <p className="text-[11px] text-slate-500 mt-1">Leak isolation & fixture repair</p>
+          <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">{slaMetrics.housekeepingAvg}</div>
+          <p className="text-[11px] text-slate-500 mt-1">Measured custodial cleanup time</p>
         </div>
 
         <div className="p-4 bg-white rounded-lg border border-slate-200">
@@ -107,8 +186,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
             <span>Facilities & Physical Plant</span>
             <Clock className="w-4 h-4 text-amber-600" />
           </div>
-          <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">12.5 Hours</div>
-          <p className="text-[11px] text-slate-500 mt-1">Furniture & HVAC work orders</p>
+          <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">{slaMetrics.facilitiesAvg}</div>
+          <p className="text-[11px] text-slate-500 mt-1">Measured furniture & HVAC repair</p>
         </div>
       </div>
 
@@ -118,14 +197,14 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
           <div className="flex items-center justify-between">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
               <AlertTriangle className="w-4 h-4 text-amber-600" />
-              Most Problematic Rooms (Semester Incidents)
+              Most Problematic Rooms (Ticket Volume)
             </h3>
-            <span className="text-[11px] text-slate-400 font-mono">Ranked</span>
+            <span className="text-[11px] text-slate-400 font-mono">Live Count</span>
           </div>
 
           <div className="space-y-3">
             {rankedRooms.slice(0, 6).map((r, i) => {
-              const maxVal = rankedRooms[0]?.totalIncidents || 10;
+              const maxVal = Math.max(rankedRooms[0]?.totalIncidents || 1, 1);
               const pct = Math.round((r.totalIncidents / maxVal) * 100);
 
               return (
@@ -136,7 +215,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
                       <span className="text-slate-500 font-normal">({r.building})</span>
                     </span>
                     <span className="font-mono text-slate-700 font-bold tabular-nums">
-                      {r.totalIncidents} incidents
+                      {r.totalIncidents} ticket(s)
                     </span>
                   </div>
                   <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
@@ -152,7 +231,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
                     />
                   </div>
                   <div className="text-[10px] text-slate-500">
-                    Primary recurring hardware: {r.equipment.slice(0, 2).join(', ')}
+                    Tracked equipment: {r.equipment.slice(0, 2).join(', ')}
                   </div>
                 </div>
               );

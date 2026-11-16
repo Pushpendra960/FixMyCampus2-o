@@ -178,6 +178,8 @@ export function heuristicClassify(description: string, room: string, building: s
     aiSummary: aiSummary || 'Campus facility maintenance report',
     urgencyReason: urgencyReason || 'Standard response priority based on automated impact assessment.',
     suggestedAction,
+    classificationSource: 'heuristic-fallback',
+    usedFallback: true,
   };
 }
 
@@ -263,9 +265,16 @@ export async function analyzeIssueWithAI(
         return data as AIClassificationResult;
       }
     }
-  } catch {
-    // Silent fallback to local heuristic
+  } catch (err: any) {
+    const local = heuristicClassify(description, room, building);
+    return {
+      ...local,
+      fallbackReason: err?.message || 'Unable to reach /api/ai/classify',
+    };
   }
 
-  return heuristicClassify(description, room, building);
+  return {
+    ...heuristicClassify(description, room, building),
+    fallbackReason: 'Classification server unavailable; used local rule engine.',
+  };
 }

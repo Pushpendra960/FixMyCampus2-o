@@ -100,6 +100,57 @@ export const storageService = {
     }
   },
 
+  replaceTicket(oldId: string, ticket: CampusTicket): void {
+    const tickets = this.getTickets();
+    const index = tickets.findIndex((t) => t.id === oldId || t.id === ticket.id);
+    if (index >= 0) {
+      tickets[index] = ticket;
+      this.saveTickets(tickets);
+    } else {
+      this.saveTickets([ticket, ...tickets]);
+    }
+  },
+
+  async compressImageFile(file: File, maxDim = 640, maxChars = 35000): Promise<string> {
+    const rawDataUrl: string = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve((e.target?.result as string) || '');
+      reader.onerror = () => reject(new Error('Failed to read image file.'));
+      reader.readAsDataURL(file);
+    });
+
+    if (!rawDataUrl || rawDataUrl.length <= maxChars) {
+      return rawDataUrl;
+    }
+
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('Image decode failed'));
+        image.src = rawDataUrl;
+      });
+
+      const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(img.width * scale));
+      canvas.height = Math.max(1, Math.round(img.height * scale));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return rawDataUrl;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      let quality = 0.72;
+      let compressed = canvas.toDataURL('image/jpeg', quality);
+      while (compressed.length > maxChars && quality > 0.25) {
+        quality -= 0.15;
+        compressed = canvas.toDataURL('image/jpeg', quality);
+      }
+      return compressed;
+    } catch {
+      return rawDataUrl;
+    }
+  },
+
   resetToDemoDefaults(): { tickets: CampusTicket[]; rooms: RoomRecord[]; notifs: SimulatedNotification[] } {
     localStorage.removeItem(STORAGE_KEYS.TICKETS);
     localStorage.removeItem(STORAGE_KEYS.ROOMS);
@@ -155,7 +206,6 @@ export const storageService = {
     }
 
     try {
-      // First try via server proxy (which calls GET ?action=health)
       const res = await fetch('/api/sheets/test-connection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -164,12 +214,28 @@ export const storageService = {
 
       const data = await res.json();
       if (res.ok && data.success) {
-        return { success: true, message: data.message || 'FixMyCampus Backend V2 is running.', details: data.details };
-      } else {
-        return { success: false, message: data.message || 'Backend connection test failed.', details: data.details };
+        if (data.details && data.details.spreadsheetConnected === false) {
+          return {
+            success: false,
+            message:
+              data.details.diagnostic ||
+              'Apps Script reachable, but Google Sheet connection failed (spreadsheetConnected: false).',
+            details: data.details,
+          };
+        }
+        return {
+          success: true,
+          message: data.message || 'FixMyCampus Backend V2 is running.',
+          details: data.details,
+        };
       }
+      return {
+        success: false,
+        message: data.message || 'Backend connection test failed.',
+        details: data.details,
+      };
     } catch (proxyErr: any) {
-      // Fallback: try direct fetch with ?action=health
+      // Fallback: direct GET ?action=health
       try {
         const directUrl = targetUrl.includes('?') ? `${targetUrl}&action=health` : `${targetUrl}?action=health`;
         const directRes = await fetch(directUrl, {
@@ -178,10 +244,26 @@ export const storageService = {
         });
         const data = await directRes.json();
         if (directRes.ok && data && data.success) {
-          return { success: true, message: data.message || 'Connected directly to Google Apps Script backend.', details: data };
-        } else {
-          return { success: false, message: data?.message || `Backend responded with HTTP ${directRes.status}`, details: data };
+          if (data.spreadsheetConnected === false) {
+            return {
+              success: false,
+              message:
+                data.diagnostic ||
+                'Apps Script reachable, but spreadsheetConnected is false. Configure SPREADSHEET_ID in Code.gs and re-deploy.',
+              details: data,
+            };
+          }
+          return {
+            success: true,
+            message: data.diagnostic || data.message || 'Connected directly to Google Apps Script backend.',
+            details: data,
+          };
         }
+        return {
+          success: false,
+          message: data?.message || `Backend responded with HTTP ${directRes.status}`,
+          details: data,
+        };
       } catch (directErr: any) {
         return {
           success: false,
@@ -199,6 +281,8 @@ export const storageService = {
     message: string;
     ticketId?: string;
     department?: string;
+    status?: string;
+    requiresManualReview?: boolean;
     notification?: { sent: boolean; message: string; status?: string; recipient?: string; cc?: string };
     data?: any;
     error?: string;
@@ -225,18 +309,18 @@ export const storageService = {
           message: data.message || 'Ticket recorded in Google Sheets.',
           ticketId: data.ticketId,
           department: data.department || data.backendResponse?.department,
+          status: data.status || data.backendResponse?.status,
+          requiresManualReview: !!(data.requiresManualReview || data.backendResponse?.requiresManualReview),
           notification: data.notification,
           data: data.backendResponse,
         };
-      } else {
-        return {
-          success: false,
-          message: data.message || 'Google Sheets backend rejected the submission.',
-          error: data.message,
-        };
       }
+      return {
+        success: false,
+        message: data.message || 'Google Sheets backend rejected the submission.',
+        error: data.message,
+      };
     } catch (err: any) {
-      // Fallback to direct call with action: createTicket
       try {
         const payload = {
           action: 'createTicket',
@@ -252,6 +336,7 @@ export const storageService = {
           aiSummary: ticket.aiSummary || ticket.description,
           evidenceReference: ticket.photoUrl || '',
           facultyEmail: ticket.facultyEmail || '',
+          duplicateOf: ticket.isDuplicateOf || '',
         };
 
         const directRes = await fetch(targetUrl, {
@@ -267,14 +352,15 @@ export const storageService = {
             message: 'Ticket recorded in Google Sheets (direct connection).',
             ticketId: data.ticketId,
             department: data.department,
+            status: data.status,
+            requiresManualReview: !!data.requiresManualReview,
             notification: data.notification,
           };
-        } else {
-          return {
-            success: false,
-            message: data?.message || `Backend returned HTTP ${directRes.status}`,
-          };
         }
+        return {
+          success: false,
+          message: data?.message || `Backend returned HTTP ${directRes.status}`,
+        };
       } catch (directErr: any) {
         return {
           success: false,
@@ -290,7 +376,9 @@ export const storageService = {
     status: string,
     resolutionNotes?: string,
     evidenceReference?: string,
-    url?: string
+    url?: string,
+    updatedBy?: string,
+    assignedTo?: string
   ): Promise<{ success: boolean; message: string }> {
     const targetUrl = (url || this.getBackendUrl()).trim();
     if (!targetUrl) return { success: false, message: 'No backend URL configured.' };
@@ -305,10 +393,12 @@ export const storageService = {
           status,
           resolutionNotes,
           evidenceReference,
+          updatedBy,
+          assignedTo,
         }),
       });
       const data = await res.json();
-      return { success: data.success, message: data.message };
+      return { success: !!(res.ok && data.success), message: data.message || 'Status sync response received.' };
     } catch (err: any) {
       return { success: false, message: err.message || 'Status sync failed' };
     }
@@ -325,7 +415,7 @@ export const storageService = {
         body: JSON.stringify({ webAppUrl: targetUrl }),
       });
       const data = await res.json();
-      if (data && data.success && Array.isArray(data.tickets)) {
+      if (res.ok && data && data.success && Array.isArray(data.tickets)) {
         const mappedTickets: CampusTicket[] = data.tickets.map((row: any, idx: number) => {
           const id = String(row.TicketID || row.TicketId || row.ticketId || row['Ticket ID'] || row.id || `FMC-${1000 + idx}`);
           const isAnon = row.IsAnonymous === true || String(row.IsAnonymous).toLowerCase() === 'true';
@@ -342,6 +432,7 @@ export const storageService = {
           const photoUrl = row.EvidenceReference || row.photoUrl || undefined;
           const resNotes = row.ResolutionNotes || row.resolutionNotes;
           const resAt = row.ResolvedAt || row.resolvedAt;
+          const assignedTo = row.AssignedTo || row.assignedTo || undefined;
 
           return {
             id,
@@ -356,8 +447,9 @@ export const storageService = {
             status,
             aiSummary,
             urgencyReason: 'Authoritative record synchronized from Google Sheets Tickets sheet.',
-            photoUrl,
+            photoUrl: photoUrl && String(photoUrl).startsWith('[' ) ? undefined : photoUrl,
             reportedAt,
+            assignedTo,
             assignedDepartmentCoordinator: 'Campus Coordinator',
             assignedDepartmentHead: 'Department Head',
             timeline: [
@@ -375,6 +467,7 @@ export const storageService = {
               notes: resNotes || 'Resolved per procedure',
               photoUrl,
             } : undefined,
+            isDuplicateOf: row.DuplicateOf || undefined,
             upvotes: 1,
           };
         });
@@ -386,7 +479,7 @@ export const storageService = {
           message: data.message,
         };
       }
-      return { success: false, message: data.message || 'No tickets found in sheet.' };
+      return { success: false, message: data.message || 'Failed to fetch tickets from sheet.' };
     } catch (err: any) {
       return { success: false, message: err.message || 'Failed to fetch tickets' };
     }
@@ -438,7 +531,7 @@ export const storageService = {
         body: JSON.stringify({ webAppUrl: targetUrl, evidence }),
       });
       const data = await res.json();
-      return data;
+      return { success: !!(res.ok && data.success), message: data.message || 'Evidence submitted.', evidenceId: data.evidenceId };
     } catch (err: any) {
       return { success: false, message: err.message || 'Failed to record evidence' };
     }
@@ -455,7 +548,7 @@ export const storageService = {
         body: JSON.stringify({ webAppUrl: targetUrl }),
       });
       const data = await res.json();
-      return { success: data.success, departments: data.departments, message: data.message };
+      return { success: !!(res.ok && data.success), departments: data.departments, message: data.message };
     } catch (err: any) {
       return { success: false, message: err.message || 'Failed to fetch departments' };
     }
@@ -480,9 +573,8 @@ export const storageService = {
       const data = await res.json();
       if (res.ok && data.success) {
         return { success: true, message: data.message, details: data.backendResponse };
-      } else {
-        return { success: false, message: data.message || 'Sync failed.' };
       }
+      return { success: false, message: data.message || 'Sync failed.' };
     } catch (err: any) {
       return { success: false, message: `Sync failed: ${err.message || 'Network error'}` };
     }

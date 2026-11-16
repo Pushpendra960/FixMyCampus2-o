@@ -98,6 +98,8 @@ export interface SimulatedNotification {
   status: 'Queued' | 'Dispatched (Demo)';
 }
 
+export type BackendConnectionStatus = 'demo' | 'connecting' | 'live' | 'error';
+
 export interface AIClassificationResult {
   category: IssueCategory;
   recommendedDepartment: string;
@@ -105,4 +107,8 @@ export interface AIClassificationResult {
   aiSummary: string;
   urgencyReason: string;
   suggestedAction: string;
+  classificationSource?: 'gemini' | 'heuristic-fallback';
+  usedFallback?: boolean;
+  fallbackReason?: string;
+  model?: string;
 }

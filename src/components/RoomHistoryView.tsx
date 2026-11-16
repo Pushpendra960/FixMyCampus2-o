@@ -27,30 +27,60 @@ export const RoomHistoryView: React.FC<RoomHistoryViewProps> = ({
   onSelectTicket,
   onReportIssueForRoom,
 }) => {
+  // Merge baseline rooms with any additional rooms referenced by live tickets
+  const mergedRooms: RoomRecord[] = React.useMemo(() => {
+    const map = new Map<string, RoomRecord>();
+    for (const r of rooms) {
+      map.set(r.roomNumber.toLowerCase(), { ...r });
+    }
+    for (const t of tickets) {
+      const key = t.roomNumber.toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, {
+          roomNumber: t.roomNumber,
+          building: t.building || 'Campus',
+          roomType: 'Lecture Hall',
+          capacity: 40,
+          equipment: [t.category],
+          totalIncidents: 0,
+          activeTickets: [],
+          lastMaintenance: t.reportedAt,
+        });
+      }
+    }
+    return Array.from(map.values()).map((r) => {
+      const matching = tickets.filter((t) => t.roomNumber.toLowerCase() === r.roomNumber.toLowerCase());
+      return {
+        ...r,
+        totalIncidents: matching.length,
+      };
+    });
+  }, [rooms, tickets]);
+
   const [selectedRoomNumber, setSelectedRoomNumber] = useState<string>(
-    rooms[0]?.roomNumber || 'Room 302'
+    mergedRooms[0]?.roomNumber || 'Room 302'
   );
   const [roomFilterSearch, setRoomFilterSearch] = useState('');
 
   const selectedRoom =
-    rooms.find((r) => r.roomNumber === selectedRoomNumber) || rooms[0];
+    mergedRooms.find((r) => r.roomNumber === selectedRoomNumber) || mergedRooms[0];
 
-  const filteredRoomList = rooms.filter(
+  const filteredRoomList = mergedRooms.filter(
     (r) =>
       r.roomNumber.toLowerCase().includes(roomFilterSearch.toLowerCase()) ||
       r.building.toLowerCase().includes(roomFilterSearch.toLowerCase())
   );
 
-  const roomTickets = tickets.filter(
-    (t) => t.roomNumber.toLowerCase() === selectedRoom.roomNumber.toLowerCase()
-  );
+  const roomTickets = selectedRoom
+    ? tickets.filter((t) => t.roomNumber.toLowerCase() === selectedRoom.roomNumber.toLowerCase())
+    : [];
 
   const activeRoomTickets = roomTickets.filter(
     (t) => t.status !== 'Closed' && t.status !== 'Resolved'
   );
 
   const pastRoomHistory =
-    ROOM_MAINTENANCE_HISTORY[selectedRoom.roomNumber] || [
+    (selectedRoom && ROOM_MAINTENANCE_HISTORY[selectedRoom.roomNumber]) || [
       {
         date: '2026-08-10',
         issue: 'Routine semester start classroom inspection',
@@ -58,6 +88,14 @@ export const RoomHistoryView: React.FC<RoomHistoryViewProps> = ({
         category: 'Facilities/Maintenance',
       },
     ];
+
+  if (!selectedRoom) {
+    return (
+      <div className="p-8 bg-white rounded-lg border border-slate-200 text-center text-xs text-slate-500">
+        No room records available yet.
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

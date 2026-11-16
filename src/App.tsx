@@ -8,7 +8,7 @@ import { ReportIssueModal } from './components/ReportIssueModal';
 import { TicketDetailModal } from './components/TicketDetailModal';
 import { NotificationsModal } from './components/NotificationsModal';
 import { GoogleSheetsIntegrationModal } from './components/GoogleSheetsIntegrationModal';
-import { CampusTicket, RoomRecord, SimulatedNotification } from './types/campus';
+import { BackendConnectionStatus, CampusTicket, RoomRecord, SimulatedNotification } from './types/campus';
 import { storageService } from './services/storageService';
 import { DEPARTMENTS } from './data/mockData';
 
@@ -22,6 +22,7 @@ export default function App() {
 
   // Modals
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [reportInitialLocation, setReportInitialLocation] = useState<{ building?: string; room?: string }>({});
   const [selectedTicket, setSelectedTicket] = useState<CampusTicket | null>(null);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isSheetsModalOpen, setIsSheetsModalOpen] = useState(false);
@@ -33,8 +34,18 @@ export default function App() {
   } | null>(null);
 
   const [backendUrl, setBackendUrl] = useState<string>(storageService.getBackendUrl());
+  const [backendStatus, setBackendStatus] = useState<BackendConnectionStatus>(
+    storageService.getBackendUrl() ? 'connecting' : 'demo'
+  );
 
-  // Load data on mount & attempt live sync with Google Sheets if configured
+  const showToast = (message: string, type: 'info' | 'success' | 'error' = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(null);
+    }, 6000);
+  };
+
+  // Load data on mount & verify live Google Sheets connection if configured
   useEffect(() => {
     const loadedTickets = storageService.getTickets();
     const loadedRooms = storageService.getRooms();
@@ -44,50 +55,58 @@ export default function App() {
     setRooms(loadedRooms);
     setNotifications(loadedNotifs);
 
-    const backendUrl = storageService.getBackendUrl();
-    if (backendUrl) {
-      storageService.fetchBackendTickets(backendUrl).then((res) => {
-        if (res.success && res.tickets && res.tickets.length > 0) {
-          setTickets(res.tickets);
-          storageService.saveTickets(res.tickets);
-        }
-      }).catch((err) => {
-        console.warn('Initial live sheet sync notice:', err);
-      });
+    const activeUrl = storageService.getBackendUrl();
+    if (!activeUrl) {
+      setBackendStatus('demo');
+      return;
     }
+
+    setBackendStatus('connecting');
+    (async () => {
+      const healthRes = await storageService.testBackendConnection(activeUrl);
+      if (!healthRes.success) {
+        setBackendStatus('error');
+        showToast(
+          `Google Sheets connection check failed: ${healthRes.message}. Open Sheets Sync to configure SPREADSHEET_ID.`,
+          'error'
+        );
+        return;
+      }
+
+      const ticketRes = await storageService.fetchBackendTickets(activeUrl);
+      if (ticketRes.success && Array.isArray(ticketRes.tickets)) {
+        setBackendStatus('live');
+        setTickets(ticketRes.tickets);
+        storageService.saveTickets(ticketRes.tickets);
+      } else {
+        setBackendStatus('error');
+        showToast(`Failed to read live tickets: ${ticketRes.message || 'Unknown error'}`, 'error');
+      }
+    })();
   }, []);
 
-  const showToast = (message: string, type: 'info' | 'success' | 'error' = 'info') => {
-    setToast({ message, type });
-    setTimeout(() => {
-      setToast(null);
-    }, 6000);
-  };
-
   const handleCreateTicket = async (newTicketData: CampusTicket) => {
-    // Generate valid FMC ID
-    const newId = storageService.generateNextTicketId(tickets);
+    const tempId = storageService.generateNextTicketId(tickets);
     const finalizedTicket: CampusTicket = {
       ...newTicketData,
-      id: newId,
+      id: tempId,
     };
 
-    // Add to local storage
+    // Save locally immediately for responsive feedback
     storageService.addTicket(finalizedTicket);
-    const updatedTickets = storageService.getTickets();
-    const updatedRooms = storageService.getRooms();
-    setTickets(updatedTickets);
-    setRooms(updatedRooms);
+    setTickets(storageService.getTickets());
+    setRooms(storageService.getRooms());
 
-    // Queue simulated notifications for Coordinator & Department Head
+    // Queue local notification queue entry (only used as demo record if no live backend)
     const deptInfo =
       DEPARTMENTS[finalizedTicket.recommendedDepartment] ||
+      DEPARTMENTS['General Administration'] ||
       DEPARTMENTS['IT / Audio-Visual Support'];
 
     const newNotifs: SimulatedNotification[] = [
       {
         id: `notif-${Date.now()}`,
-        ticketId: newId,
+        ticketId: tempId,
         recipientName: deptInfo.leadCoordinator,
         recipientEmail: deptInfo.coordinatorEmail,
         recipientRole: 'Coordinator',
@@ -99,13 +118,13 @@ export default function App() {
       },
       {
         id: `notif-${Date.now() + 1}`,
-        ticketId: newId,
+        ticketId: tempId,
         recipientName: deptInfo.headName,
         recipientEmail: deptInfo.headEmail,
         recipientRole: 'Department Head',
         channel: 'Email (Simulated)',
         subject: `[Department Digest] ${finalizedTicket.category} Logged for ${finalizedTicket.roomNumber}`,
-        body: `Automated executive notification: Ticket ${newId} logged for ${finalizedTicket.roomNumber}. Assigned coordinator: ${deptInfo.leadCoordinator}.`,
+        body: `Automated notification: Ticket ${tempId} logged for ${finalizedTicket.roomNumber}.`,
         timestamp: finalizedTicket.reportedAt,
         status: 'Dispatched (Demo)',
       },
@@ -116,55 +135,60 @@ export default function App() {
     storageService.saveNotifications(combinedNotifs);
     setNotifications(combinedNotifs);
 
-    // Check for configured Google Apps Script Web App backend
-    const backendUrl = storageService.getBackendUrl();
-    if (backendUrl) {
-      showToast(`Transmitting ticket to Google Sheets backend...`, 'info');
+    const activeUrl = storageService.getBackendUrl();
+    if (activeUrl) {
+      showToast('Transmitting ticket to Google Sheets backend...', 'info');
       try {
-        const backendRes = await storageService.sendTicketToBackend(finalizedTicket, backendUrl);
+        const backendRes = await storageService.sendTicketToBackend(finalizedTicket, activeUrl);
         if (backendRes.success) {
-          // If backend generated authoritative ID e.g. FMC-6633D061, update local ticket
-          if (backendRes.ticketId && backendRes.ticketId !== finalizedTicket.id) {
-            finalizedTicket.id = backendRes.ticketId;
-          }
-          if (backendRes.department) {
-            finalizedTicket.recommendedDepartment = backendRes.department;
-            finalizedTicket.category = backendRes.department as any;
-          }
-          storageService.updateTicket(finalizedTicket);
+          setBackendStatus('live');
+          const syncedTicket: CampusTicket = {
+            ...finalizedTicket,
+            id: backendRes.ticketId || tempId,
+            recommendedDepartment: backendRes.department || finalizedTicket.recommendedDepartment,
+            category: (backendRes.department || finalizedTicket.category) as any,
+            status: (backendRes.requiresManualReview
+              ? 'Needs Review'
+              : backendRes.status || finalizedTicket.status) as any,
+          };
+
+          // Replace temporary ID cleanly in localStorage & state
+          storageService.replaceTicket(tempId, syncedTicket);
           setTickets(storageService.getTickets());
 
           let notifMsg = '';
           if (backendRes.notification) {
             const n: any = backendRes.notification;
             if (n.status === 'SENT' || n.sent) {
-              notifMsg = ` | MailApp: Outbound dispatch completed to ${n.recipient || 'responsible coordinator'}${n.cc ? ` (CC: ${n.cc})` : ''}`;
+              notifMsg = ` | MailApp: Outbound email sent to ${n.recipient || 'coordinator'}${n.cc ? ` (CC: ${n.cc})` : ''}`;
             } else if (n.status === 'FAILED') {
-              notifMsg = ` | MailApp dispatch failed: ${n.message}`;
+              notifMsg = ` | MailApp failed: ${n.message}`;
             } else {
-              notifMsg = ` | MailApp dispatch skipped: ${n.message}`;
+              notifMsg = ` | MailApp skipped: ${n.message}`;
             }
           }
 
           showToast(
-            `✓ Ticket ${finalizedTicket.id} stored in Google Sheets Tickets! [Routed to: ${finalizedTicket.recommendedDepartment}]${notifMsg}`,
+            `✓ Ticket ${syncedTicket.id} saved in Google Sheets [Dept: ${syncedTicket.recommendedDepartment}]${notifMsg}`,
             'success'
           );
         } else {
+          setBackendStatus('error');
           showToast(
-            `⚠️ Ticket ${newId} saved locally, but Google Sheets backend failed: ${backendRes.message}`,
+            `⚠️ Ticket ${tempId} saved locally only — Google Sheets backend rejected submission: ${backendRes.message}`,
             'error'
           );
         }
       } catch (err: any) {
+        setBackendStatus('error');
         showToast(
-          `⚠️ Ticket ${newId} saved locally, but network transmission failed: ${err.message}`,
+          `⚠️ Ticket ${tempId} saved locally only — network transmission failed: ${err.message}`,
           'error'
         );
       }
     } else {
       showToast(
-        `Ticket ${newId} logged in demo storage. Configure your Web App URL in Sheets Sync to save to live Google Sheets.`,
+        `Ticket ${tempId} logged in local demo storage. Configure your Web App URL in Sheets Sync to persist to Google Sheets.`,
         'info'
       );
     }
@@ -175,25 +199,32 @@ export default function App() {
     const updatedTickets = storageService.getTickets();
     setTickets(updatedTickets);
     setSelectedTicket(updated);
-    showToast(`Ticket ${updated.id} status updated to ${updated.status}.`, 'info');
 
-    // Also sync status update to backend if connected
-    const backendUrl = storageService.getBackendUrl();
-    if (backendUrl) {
+    const activeUrl = storageService.getBackendUrl();
+    if (activeUrl) {
       try {
         const syncRes = await storageService.updateTicketStatusOnBackend(
           updated.id,
           updated.status,
           updated.resolution?.notes,
           updated.resolution?.photoUrl,
-          backendUrl
+          activeUrl,
+          updated.resolution?.resolvedBy || 'Staff',
+          updated.assignedTo
         );
         if (syncRes.success) {
-          showToast(`✓ Ticket ${updated.id} status synced to Google Sheets.`, 'success');
+          setBackendStatus('live');
+          showToast(`✓ Ticket ${updated.id} (${updated.status}) synced to Google Sheets.`, 'success');
+        } else {
+          setBackendStatus('error');
+          showToast(`⚠️ Updated locally, but Google Sheets sync failed: ${syncRes.message}`, 'error');
         }
-      } catch (err) {
-        console.warn('Backend status update sync error:', err);
+      } catch (err: any) {
+        setBackendStatus('error');
+        showToast(`⚠️ Updated locally, but backend sync failed: ${err.message}`, 'error');
       }
+    } else {
+      showToast(`Ticket ${updated.id} updated to ${updated.status} (local demo storage).`, 'info');
     }
   };
 
@@ -212,26 +243,39 @@ export default function App() {
     }
   };
 
-  const handleReportIssueForRoom = (_roomNumber: string, _building: string) => {
+  const handleReportIssueForRoom = (roomNumber: string, building: string) => {
+    setReportInitialLocation({ room: roomNumber, building });
     setIsReportModalOpen(true);
   };
+
   const handleRefreshLiveTickets = async () => {
     const url = storageService.getBackendUrl();
     if (!url) {
       handleResetDemoData();
       return;
     }
+    setBackendStatus('connecting');
     showToast('Syncing live tickets from Google Sheets...', 'info');
     try {
+      const health = await storageService.testBackendConnection(url);
+      if (!health.success) {
+        setBackendStatus('error');
+        showToast(`Google Sheets health check failed: ${health.message}`, 'error');
+        return;
+      }
+
       const res = await storageService.fetchBackendTickets(url);
-      if (res.success && res.tickets && res.tickets.length > 0) {
+      if (res.success && Array.isArray(res.tickets)) {
+        setBackendStatus('live');
         setTickets(res.tickets);
         storageService.saveTickets(res.tickets);
-        showToast(`✓ Synchronized ${res.tickets.length} live tickets from Google Sheets!`, 'success');
+        showToast(`✓ Synchronized ${res.tickets.length} live ticket(s) from Google Sheets!`, 'success');
       } else {
-        showToast(`Google Sheets: ${res.message || 'No live tickets returned'}`, 'info');
+        setBackendStatus('error');
+        showToast(`Google Sheets error: ${res.message || 'Unable to fetch tickets'}`, 'error');
       }
     } catch (err: any) {
+      setBackendStatus('error');
       showToast(`Sheet query failed: ${err.message}`, 'error');
     }
   };
@@ -242,12 +286,16 @@ export default function App() {
       <Navbar
         currentTab={currentTab}
         onSelectTab={(tab) => setCurrentTab(tab as any)}
-        onOpenReportModal={() => setIsReportModalOpen(true)}
+        onOpenReportModal={() => {
+          setReportInitialLocation({});
+          setIsReportModalOpen(true);
+        }}
         onOpenNotifications={() => setIsNotificationsOpen(true)}
         onOpenSheetsModal={() => setIsSheetsModalOpen(true)}
         onResetData={handleResetDemoData}
         notificationCount={notifications.length}
         hasBackendUrl={!!backendUrl}
+        backendStatus={backendStatus}
         onRefreshLiveTickets={handleRefreshLiveTickets}
       />
 
@@ -259,11 +307,15 @@ export default function App() {
             currentTab={currentTab}
             onSelectTab={(tab) => setCurrentTab(tab as any)}
             tickets={tickets}
-            onOpenReportModal={() => setIsReportModalOpen(true)}
+            onOpenReportModal={() => {
+              setReportInitialLocation({});
+              setIsReportModalOpen(true);
+            }}
             onOpenNotifications={() => setIsNotificationsOpen(true)}
             onOpenSheetsModal={() => setIsSheetsModalOpen(true)}
             onResetData={handleResetDemoData}
             notificationCount={notifications.length}
+            backendStatus={backendStatus}
           />
         </div>
 
@@ -297,7 +349,10 @@ export default function App() {
             <DashboardView
               tickets={tickets}
               onSelectTicket={(t) => setSelectedTicket(t)}
-              onOpenReportModal={() => setIsReportModalOpen(true)}
+              onOpenReportModal={() => {
+                setReportInitialLocation({});
+                setIsReportModalOpen(true);
+              }}
               onSelectRoom={() => setCurrentTab('room-history')}
             />
           )}
@@ -324,6 +379,8 @@ export default function App() {
         onSubmitTicket={handleCreateTicket}
         existingTickets={tickets}
         onSelectExistingTicket={handleSelectTicketById}
+        initialBuilding={reportInitialLocation.building}
+        initialRoom={reportInitialLocation.room}
       />
 
       <TicketDetailModal
@@ -331,6 +388,7 @@ export default function App() {
         ticket={selectedTicket}
         onClose={() => setSelectedTicket(null)}
         onUpdateTicket={handleUpdateTicket}
+        isBackendLive={backendStatus === 'live'}
       />
 
       <NotificationsModal
@@ -344,14 +402,13 @@ export default function App() {
         isOpen={isSheetsModalOpen}
         onClose={() => setIsSheetsModalOpen(false)}
         tickets={tickets}
+        onConnectionStatusChange={(status) => setBackendStatus(status)}
         onBackendUrlUpdated={(url) => {
           setBackendUrl(url);
-          showToast(
-            url
-              ? 'Google Apps Script backend URL saved. New tickets will sync directly to Google Sheets.'
-              : 'Backend URL cleared. Operating in demo mode.',
-            'info'
-          );
+          if (!url) {
+            setBackendStatus('demo');
+            showToast('Backend URL cleared. Operating in local demo mode.', 'info');
+          }
         }}
       />
     </div>

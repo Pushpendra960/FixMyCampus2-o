@@ -1,5 +1,6 @@
 import React from 'react';
-import { Plus, ShieldCheck, RefreshCw, Bell, Sheet } from 'lucide-react';
+import { Plus, RefreshCw, Sheet } from 'lucide-react';
+import { BackendConnectionStatus } from '../types/campus';
 
 interface NavbarProps {
   currentTab: string;
@@ -10,6 +11,7 @@ interface NavbarProps {
   onResetData: () => void;
   notificationCount: number;
   hasBackendUrl?: boolean;
+  backendStatus?: BackendConnectionStatus;
   onRefreshLiveTickets?: () => void;
 }
 
@@ -22,8 +24,11 @@ export const Navbar: React.FC<NavbarProps> = ({
   onResetData,
   notificationCount,
   hasBackendUrl,
+  backendStatus,
   onRefreshLiveTickets,
 }) => {
+  const effectiveStatus: BackendConnectionStatus =
+    backendStatus || (hasBackendUrl ? 'connecting' : 'demo');
   return (
     <header className="sticky top-0 z-30 bg-white border-b border-slate-200">
       <div className="flex items-center justify-between gap-8 px-6 py-3.5 max-w-[1600px] mx-auto">
@@ -106,16 +111,42 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Zone 3: Primary Action and Utilities */}
         <div className="flex items-center gap-3 shrink-0">
-          {hasBackendUrl ? (
-            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 border border-emerald-200/80 rounded text-xs text-emerald-800">
+          {effectiveStatus === 'live' ? (
+            <button
+              onClick={onOpenSheetsModal}
+              title="Connected to live Google Sheets backend"
+              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 border border-emerald-200/80 rounded text-xs text-emerald-800 hover:bg-emerald-100 transition-colors"
+            >
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
               <span className="font-semibold uppercase tracking-wider text-[10px]">SHEETS LIVE</span>
-            </div>
+            </button>
+          ) : effectiveStatus === 'connecting' ? (
+            <button
+              onClick={onOpenSheetsModal}
+              title="Checking Google Sheets backend health"
+              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 border border-blue-200/80 rounded text-xs text-blue-800"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+              <span className="font-semibold uppercase tracking-wider text-[10px]">CONNECTING...</span>
+            </button>
+          ) : effectiveStatus === 'error' ? (
+            <button
+              onClick={onOpenSheetsModal}
+              title="Backend URL configured, but spreadsheet connection failed. Click to inspect."
+              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-rose-50 border border-rose-200/80 rounded text-xs text-rose-800 hover:bg-rose-100 transition-colors"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+              <span className="font-semibold uppercase tracking-wider text-[10px]">SHEETS ERROR</span>
+            </button>
           ) : (
-            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200/80 rounded text-xs text-amber-800">
+            <button
+              onClick={onOpenSheetsModal}
+              title="Operating in local demo mode. Click to configure Google Sheets."
+              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 border border-amber-200/80 rounded text-xs text-amber-800 hover:bg-amber-100 transition-colors"
+            >
               <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
               <span className="font-semibold uppercase tracking-wider text-[10px]">DEMO / LOCAL</span>
-            </div>
+            </button>
           )}
 
           <button

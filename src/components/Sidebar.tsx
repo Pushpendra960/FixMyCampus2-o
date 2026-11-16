@@ -13,7 +13,7 @@ import {
   AlertTriangle,
   GraduationCap,
 } from 'lucide-react';
-import { CampusTicket } from '../types/campus';
+import { BackendConnectionStatus, CampusTicket } from '../types/campus';
 import { storageService } from '../services/storageService';
 
 interface SidebarProps {
@@ -25,6 +25,7 @@ interface SidebarProps {
   onOpenSheetsModal: () => void;
   onResetData: () => void;
   notificationCount: number;
+  backendStatus?: BackendConnectionStatus;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -36,7 +37,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenSheetsModal,
   onResetData,
   notificationCount,
+  backendStatus,
 }) => {
+  const effectiveStatus: BackendConnectionStatus =
+    backendStatus || (storageService.getBackendUrl() ? 'connecting' : 'demo');
   const openCount = tickets.filter((t) => t.status === 'Open').length;
   const criticalCount = tickets.filter((t) => t.priority === 'Critical').length;
 
@@ -138,12 +142,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <span
               className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-                storageService.getBackendUrl()
+                effectiveStatus === 'live'
                   ? 'text-emerald-700 bg-emerald-50 border border-emerald-200'
+                  : effectiveStatus === 'error'
+                  ? 'text-rose-700 bg-rose-50 border border-rose-200'
+                  : effectiveStatus === 'connecting'
+                  ? 'text-blue-700 bg-blue-50 border border-blue-200'
                   : 'text-blue-700 bg-blue-50'
               }`}
             >
-              {storageService.getBackendUrl() ? 'Live Sync' : 'Configure'}
+              {effectiveStatus === 'live'
+                ? 'Live Sync'
+                : effectiveStatus === 'error'
+                ? 'Sync Error'
+                : effectiveStatus === 'connecting'
+                ? 'Checking...'
+                : 'Configure'}
             </span>
           </button>
         </div>
@@ -168,7 +182,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span>AI Triage Active</span>
           </div>
           <p className="text-[11px] text-slate-600 leading-tight">
-            Categorization, duplicate detection, and urgency assessment operating on Gemini 3.8 Flash.
+            Categorization, duplicate detection, and priority triage powered by Gemini 4 Hydrogen with rule-engine fallback.
           </p>
         </div>
       </div>

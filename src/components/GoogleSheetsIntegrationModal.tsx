@@ -17,7 +17,7 @@ import {
   Database,
   RefreshCw,
 } from 'lucide-react';
-import { CampusTicket } from '../types/campus';
+import { BackendConnectionStatus, CampusTicket } from '../types/campus';
 import { storageService } from '../services/storageService';
 import { APPS_SCRIPT_SOURCE } from '../data/appsScriptCode';
 
@@ -26,6 +26,7 @@ interface GoogleSheetsIntegrationModalProps {
   onClose: () => void;
   tickets: CampusTicket[];
   onBackendUrlUpdated?: (url: string) => void;
+  onConnectionStatusChange?: (status: BackendConnectionStatus) => void;
 }
 
 export const GoogleSheetsIntegrationModal: React.FC<GoogleSheetsIntegrationModalProps> = ({
@@ -33,6 +34,7 @@ export const GoogleSheetsIntegrationModal: React.FC<GoogleSheetsIntegrationModal
   onClose,
   tickets,
   onBackendUrlUpdated,
+  onConnectionStatusChange,
 }) => {
   const DEFAULT_DEPLOYED_URL =
     'https://script.google.com/macros/s/AKfycbyx33XJsuqoWM27AoW7sFtEIdwjNldHFvdQX3jtu6EioZBxb_2oRzqRDFIyz-wPEMlUSA/exec';
@@ -97,6 +99,7 @@ export const GoogleSheetsIntegrationModal: React.FC<GoogleSheetsIntegrationModal
         message: 'Backend URL cleared. System returned to local demo mode.',
       });
       setSheetTickets(null);
+      if (onConnectionStatusChange) onConnectionStatusChange('demo');
     }
   };
 
@@ -107,11 +110,13 @@ export const GoogleSheetsIntegrationModal: React.FC<GoogleSheetsIntegrationModal
         status: 'error',
         message: 'Please paste your Google Apps Script Web App URL first.',
       });
+      if (onConnectionStatusChange) onConnectionStatusChange('demo');
       return;
     }
 
     setIsTesting(true);
     setTestResult({ status: 'idle', message: 'Testing connection to Google Apps Script backend (action: health)...' });
+    if (onConnectionStatusChange) onConnectionStatusChange('connecting');
 
     const result = await storageService.testBackendConnection(target);
     setIsTesting(false);
@@ -124,6 +129,7 @@ export const GoogleSheetsIntegrationModal: React.FC<GoogleSheetsIntegrationModal
       });
       storageService.setBackendUrl(target);
       if (onBackendUrlUpdated) onBackendUrlUpdated(target);
+      if (onConnectionStatusChange) onConnectionStatusChange('live');
       // Automatically refresh live sheet records
       fetchLiveSheetRecords(target);
     } else {
@@ -132,6 +138,7 @@ export const GoogleSheetsIntegrationModal: React.FC<GoogleSheetsIntegrationModal
         message: result.message || 'Backend connection failed.',
         details: typeof result.details === 'object' ? JSON.stringify(result.details) : result.details,
       });
+      if (onConnectionStatusChange) onConnectionStatusChange('error');
     }
   };
 
@@ -433,7 +440,7 @@ export const GoogleSheetsIntegrationModal: React.FC<GoogleSheetsIntegrationModal
                       <span>{testResult.message}</span>
                     </div>
                     {testResult.details && (
-                      <p className="mt-1 text-[11px] font-mono text-slate-600 truncate">
+                      <p className="mt-1 text-[11px] font-mono text-slate-600 break-all whitespace-pre-wrap">
                         Response: {testResult.details}
                       </p>
                     )}

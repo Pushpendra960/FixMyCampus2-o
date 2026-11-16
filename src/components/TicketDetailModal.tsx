@@ -1,4 +1,4 @@
-import React, { useState, useId } from 'react';
+import React, { useState, useEffect, useId } from 'react';
 import {
   X,
   Clock,
@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { CampusTicket, ResolutionEvidence, TicketStatus } from '../types/campus';
 import { DEPARTMENTS } from '../data/mockData';
+import { storageService } from '../services/storageService';
 
 interface TicketDetailModalProps {
   ticket: CampusTicket | null;
@@ -23,6 +24,7 @@ interface TicketDetailModalProps {
   onClose: () => void;
   onUpdateTicket: (updated: CampusTicket) => void;
   onDispatchNotification?: (ticketId: string, role: string, subject: string, body: string) => void;
+  isBackendLive?: boolean;
 }
 
 const STATUS_OPTIONS: TicketStatus[] = [
@@ -50,35 +52,46 @@ export const TicketDetailModal: React.FC<TicketDetailModalProps> = ({
   isOpen,
   onClose,
   onUpdateTicket,
+  isBackendLive = false,
 }) => {
   const evidenceInputId = useId();
-  if (!isOpen || !ticket) return null;
-
-  const [currentStatus, setCurrentStatus] = useState<TicketStatus>(ticket.status);
-  const [assignedTechnician, setAssignedTechnician] = useState<string>(ticket.assignedTo || '');
+  const [currentStatus, setCurrentStatus] = useState<TicketStatus>(ticket?.status || 'Open');
+  const [assignedTechnician, setAssignedTechnician] = useState<string>(ticket?.assignedTo || '');
   const [timelineNote, setTimelineNote] = useState('');
 
   // Resolution workflow states
-  const [resolutionNotes, setResolutionNotes] = useState(ticket.resolution?.notes || '');
+  const [resolutionNotes, setResolutionNotes] = useState(ticket?.resolution?.notes || '');
   const [resolvedBy, setResolvedBy] = useState(
-    ticket.resolution?.resolvedBy || ticket.assignedTo || 'Lead Technician'
+    ticket?.resolution?.resolvedBy || ticket?.assignedTo || 'Lead Technician'
   );
   const [evidencePhotoUrl, setEvidencePhotoUrl] = useState<string | undefined>(
-    ticket.resolution?.photoUrl
+    ticket?.resolution?.photoUrl
   );
   const [evidenceFileName, setEvidenceFileName] = useState('');
   const [closeError, setCloseError] = useState<string | null>(null);
 
-  const handleEvidenceUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  useEffect(() => {
+    if (isOpen && ticket) {
+      setCurrentStatus(ticket.status);
+      setAssignedTechnician(ticket.assignedTo || '');
+      setTimelineNote('');
+      setResolutionNotes(ticket.resolution?.notes || '');
+      setResolvedBy(ticket.resolution?.resolvedBy || ticket.assignedTo || 'Lead Technician');
+      setEvidencePhotoUrl(ticket.resolution?.photoUrl);
+      setEvidenceFileName('');
+      setCloseError(null);
+    }
+  }, [isOpen, ticket?.id]);
+
+  if (!isOpen || !ticket) return null;
+
+  const handleEvidenceUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       setEvidenceFileName(file.name);
-      const reader = new FileReader();
-      reader.onload = (loadEvt) => {
-        setEvidencePhotoUrl(loadEvt.target?.result as string);
-        setCloseError(null);
-      };
-      reader.readAsDataURL(file);
+      const compressed = await storageService.compressImageFile(file);
+      setEvidencePhotoUrl(compressed);
+      setCloseError(null);
     }
   };
 
@@ -216,7 +229,10 @@ export const TicketDetailModal: React.FC<TicketDetailModalProps> = ({
     onUpdateTicket(updated);
   };
 
-  const dept = DEPARTMENTS[ticket.recommendedDepartment] || DEPARTMENTS['Campus Operations & Safety'];
+  const dept =
+    DEPARTMENTS[ticket.recommendedDepartment] ||
+    DEPARTMENTS['General Administration'] ||
+    DEPARTMENTS['IT / Audio-Visual Support'];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
@@ -543,15 +559,22 @@ export const TicketDetailModal: React.FC<TicketDetailModalProps> = ({
               </div>
             </div>
 
-            {/* Simulated Notification Record */}
-            <div className="p-3 bg-amber-50/60 border border-amber-200 rounded-lg text-xs text-amber-900 space-y-1">
-              <span className="font-semibold text-amber-950 flex items-center gap-1">
-                <FileText className="w-3.5 h-3.5 text-amber-600" />
-                Notification Log (Simulated)
+            {/* Notification Status Record */}
+            <div
+              className={`p-3 rounded-lg text-xs space-y-1 border ${
+                isBackendLive
+                  ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
+                  : 'bg-amber-50/60 border-amber-200 text-amber-900'
+              }`}
+            >
+              <span className="font-semibold flex items-center gap-1">
+                <FileText className={`w-3.5 h-3.5 ${isBackendLive ? 'text-emerald-600' : 'text-amber-600'}`} />
+                {isBackendLive ? 'Live Dispatch & Audit Sync' : 'Notification Log (Local Demo)'}
               </span>
-              <p className="text-[11px] text-amber-800">
-                Dispatches are prepared for {dept.leadCoordinator} and {dept.headName}. In demo
-                mode, alerts are staged without sending outbound SMTP emails.
+              <p className={`text-[11px] ${isBackendLive ? 'text-emerald-800' : 'text-amber-800'}`}>
+                {isBackendLive
+                  ? `Connected to Google Sheets. Status transitions, ResolutionEvidence, and AuditLogs sync live; outbound emails use DepartmentDirectory contacts via MailApp.`
+                  : `Dispatches are staged locally for ${dept.leadCoordinator} and ${dept.headName}. Connect Google Apps Script to enable live MailApp delivery.`}
               </p>
             </div>
           </div>

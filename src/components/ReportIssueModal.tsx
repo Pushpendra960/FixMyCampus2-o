@@ -15,6 +15,7 @@ import {
 import { BUILDINGS, DEPARTMENTS } from '../data/mockData';
 import { CampusTicket, IssueCategory, TicketPriority } from '../types/campus';
 import { analyzeIssueWithAI, checkDuplicateTickets, DuplicateCheckResult } from '../services/aiService';
+import { storageService } from '../services/storageService';
 
 interface ReportIssueModalProps {
   isOpen: boolean;
@@ -22,6 +23,8 @@ interface ReportIssueModalProps {
   onSubmitTicket: (ticket: CampusTicket) => Promise<void> | void;
   existingTickets: CampusTicket[];
   onSelectExistingTicket?: (ticketId: string) => void;
+  initialBuilding?: string;
+  initialRoom?: string;
 }
 
 export const ReportIssueModal: React.FC<ReportIssueModalProps> = ({
@@ -30,13 +33,15 @@ export const ReportIssueModal: React.FC<ReportIssueModalProps> = ({
   onSubmitTicket,
   existingTickets,
   onSelectExistingTicket,
+  initialBuilding,
+  initialRoom,
 }) => {
   const photoInputId = useId();
   const [facultyName, setFacultyName] = useState('Dr. Marcus Brody');
   const [facultyEmail, setFacultyEmail] = useState('m.brody@campus.edu');
   const [isAnonymous, setIsAnonymous] = useState(false);
-  const [building, setBuilding] = useState(BUILDINGS[0]);
-  const [roomNumber, setRoomNumber] = useState('Room 302');
+  const [building, setBuilding] = useState(initialBuilding || BUILDINGS[0]);
+  const [roomNumber, setRoomNumber] = useState(initialRoom || 'Room 302');
   const [description, setDescription] = useState('');
   const [photoUrl, setPhotoUrl] = useState<string | undefined>(undefined);
   const [photoName, setPhotoName] = useState<string>('');
@@ -50,6 +55,8 @@ export const ReportIssueModal: React.FC<ReportIssueModalProps> = ({
   const [aiSummary, setAiSummary] = useState('');
   const [urgencyReason, setUrgencyReason] = useState('');
   const [suggestedAction, setSuggestedAction] = useState('');
+  const [classificationSource, setClassificationSource] = useState<'gemini' | 'heuristic-fallback'>('heuristic-fallback');
+  const [fallbackReason, setFallbackReason] = useState<string | undefined>(undefined);
 
   // Duplicate detection state
   const [duplicateResult, setDuplicateResult] = useState<DuplicateCheckResult>({
@@ -57,6 +64,13 @@ export const ReportIssueModal: React.FC<ReportIssueModalProps> = ({
     similarityScore: 0,
   });
   const [ignoreDuplicate, setIgnoreDuplicate] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      if (initialBuilding) setBuilding(initialBuilding);
+      if (initialRoom) setRoomNumber(initialRoom);
+    }
+  }, [isOpen, initialBuilding, initialRoom]);
 
   // Run AI analysis & duplicate check when description / room changes
   useEffect(() => {
@@ -77,6 +91,8 @@ export const ReportIssueModal: React.FC<ReportIssueModalProps> = ({
         setAiSummary(result.aiSummary);
         setUrgencyReason(result.urgencyReason);
         setSuggestedAction(result.suggestedAction || '');
+        setClassificationSource(result.classificationSource || 'heuristic-fallback');
+        setFallbackReason(result.fallbackReason);
 
         // Check duplicates
         const dup = checkDuplicateTickets(roomNumber, result.category, description, existingTickets);
@@ -115,15 +131,12 @@ export const ReportIssueModal: React.FC<ReportIssueModalProps> = ({
     }
   };
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       setPhotoName(file.name);
-      const reader = new FileReader();
-      reader.onload = (loadEvt) => {
-        setPhotoUrl(loadEvt.target?.result as string);
-      };
-      reader.readAsDataURL(file);
+      const compressed = await storageService.compressImageFile(file);
+      setPhotoUrl(compressed);
     }
   };
 
@@ -180,6 +193,10 @@ export const ReportIssueModal: React.FC<ReportIssueModalProps> = ({
       };
 
       await onSubmitTicket(newTicket);
+      setDescription('');
+      setPhotoUrl(undefined);
+      setPhotoName('');
+      setIgnoreDuplicate(false);
       onClose();
     } finally {
       setIsSubmitting(false);
@@ -446,12 +463,21 @@ export const ReportIssueModal: React.FC<ReportIssueModalProps> = ({
           {/* AI CLASSIFICATION & SMART PRIORITY PREVIEW CARD */}
           {description.trim().length >= 10 && (
             <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-lg space-y-3">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5 text-blue-900 font-bold text-xs">
                   <Sparkles className="w-4 h-4 text-blue-600" />
                   <span>FixMyCampus AI Triage Engine</span>
                 </div>
-                <span className="text-[11px] text-blue-700 font-medium">Auto-Classified</span>
+                <span
+                  title={fallbackReason || 'Classified by Gemini AI'}
+                  className={`text-[11px] font-medium px-2 py-0.5 rounded border ${
+                    classificationSource === 'gemini'
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      : 'bg-amber-50 text-amber-800 border-amber-200'
+                  }`}
+                >
+                  {classificationSource === 'gemini' ? 'Gemini AI Live' : 'Rule-Engine Fallback'}
+                </span>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">

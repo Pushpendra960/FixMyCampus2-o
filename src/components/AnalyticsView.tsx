@@ -4,41 +4,57 @@ import {
   TrendingUp,
   Clock,
   Building,
-  CheckCircle,
   AlertTriangle,
   Zap,
+  Calendar,
 } from 'lucide-react';
-import { CampusTicket, IssueCategory, RoomRecord } from '../types/campus';
-import { DEPARTMENTS } from '../data/mockData';
+import { CampusTicket, RoomRecord, SLA_TARGET_HOURS } from '../types/campus';
 
 interface AnalyticsViewProps {
   tickets: CampusTicket[];
   rooms: RoomRecord[];
+  isBackendLive?: boolean;
 }
 
-export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) => {
-  const SLA_TARGET_HOURS = 4;
+function parseTimestampMs(value?: string): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return isNaN(ms) ? null : ms;
+}
 
-  // Compute actual resolution metrics from tickets with valid timestamps
+export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
+  tickets,
+  rooms,
+  isBackendLive = false,
+}) => {
+  // Compute actual resolution & SLA metrics from tickets with valid timestamps
   const slaMetrics = useMemo(() => {
-    const parseResolutionHours = (t: CampusTicket): number | null => {
-      if (!t.resolution?.resolvedAt || !t.reportedAt) return null;
-      const start = Date.parse(t.reportedAt);
-      const end = Date.parse(t.resolution.resolvedAt);
-      if (isNaN(start) || isNaN(end) || end < start) return null;
-      return (end - start) / (1000 * 60 * 60);
-    };
-
     const resolvedDurations: number[] = [];
     const byDept: Record<string, number[]> = {};
 
+    let resolvedTicketCount = 0;
+    let openTicketCount = 0;
+
     for (const t of tickets) {
-      const hrs = parseResolutionHours(t);
-      if (hrs !== null) {
-        resolvedDurations.push(hrs);
-        const dept = t.recommendedDepartment || 'General Administration';
-        if (!byDept[dept]) byDept[dept] = [];
-        byDept[dept].push(hrs);
+      const isDone = t.status === 'Resolved' || t.status === 'Closed';
+      if (isDone) {
+        resolvedTicketCount++;
+        const endTimestamp = t.resolution?.resolvedAt || t.closedAt || t.updatedAt;
+        if (endTimestamp && t.reportedAt) {
+          const start = parseTimestampMs(t.reportedAt);
+          const end = parseTimestampMs(endTimestamp);
+          if (start !== null && end !== null && end >= start) {
+            const hrs = (end - start) / (1000 * 60 * 60);
+            if (Number.isFinite(hrs)) {
+              resolvedDurations.push(hrs);
+              const dept = t.recommendedDepartment || 'General Administration';
+              if (!byDept[dept]) byDept[dept] = [];
+              byDept[dept].push(hrs);
+            }
+          }
+        }
+      } else {
+        openTicketCount++;
       }
     }
 
@@ -48,56 +64,87 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
         ? Math.round((withinSlaCount / resolvedDurations.length) * 1000) / 10
         : null;
 
-    const avgFor = (deptKey: string): string => {
-      const list = byDept[deptKey] || [];
+    const overallAvgHours =
+      resolvedDurations.length > 0
+        ? `${(resolvedDurations.reduce((a, b) => a + b, 0) / resolvedDurations.length).toFixed(1)}h`
+        : 'N/A';
+
+    const resolutionRatePct =
+      tickets.length > 0
+        ? Math.round((resolvedTicketCount / tickets.length) * 1000) / 10
+        : 0;
+
+    const avgFor = (deptAliases: string[]): string => {
+      const list = deptAliases.flatMap((alias) => byDept[alias] || []);
       if (list.length === 0) return 'No data';
       const avg = list.reduce((a, b) => a + b, 0) / list.length;
-      return `${avg.toFixed(1)} Hours`;
+      return Number.isFinite(avg) ? `${avg.toFixed(1)} Hours` : 'No data';
     };
 
     return {
       compliancePct,
       resolvedSampleCount: resolvedDurations.length,
-      suppliesAvg: avgFor('Classroom Supplies'),
-      itAvAvg: avgFor('IT / Audio-Visual Support'),
-      housekeepingAvg: avgFor('Housekeeping'),
-      facilitiesAvg: avgFor('Facilities / Maintenance'),
+      resolvedTicketCount,
+      openTicketCount,
+      resolutionRatePct,
+      overallAvgHours,
+      suppliesAvg: avgFor(['Classroom Supplies', 'Academic Resource & Supplies']),
+      itAvAvg: avgFor(['IT / Audio-Visual Support', 'IT/AV Support', 'IT & Multimedia Services']),
+      housekeepingAvg: avgFor(['Housekeeping', 'Custodial & Housekeeping']),
+      facilitiesAvg: avgFor(['Facilities / Maintenance', 'Facilities/Maintenance', 'Facilities & Physical Plant']),
+      electricalAvg: avgFor(['Electrical Maintenance', 'Electrical', 'Electrical Infrastructure']),
+      plumbingAvg: avgFor(['Plumbing / Maintenance', 'Plumbing', 'Plumbing & Sanitation']),
     };
   }, [tickets]);
 
-  // 1. Most Problematic Rooms (merge static catalog with live ticket counts)
+  // 1. Most Problematic Rooms (strictly from tickets in Live Mode)
   const rankedRooms = useMemo(() => {
-    const map = new Map<string, { roomNumber: string; building: string; totalIncidents: number; equipment: string[] }>();
-    for (const r of rooms) {
-      map.set(r.roomNumber.toLowerCase(), {
-        roomNumber: r.roomNumber,
-        building: r.building,
-        totalIncidents: 0,
-        equipment: r.equipment,
-      });
+    const map = new Map<
+      string,
+      { roomNumber: string; building: string; totalIncidents: number; equipment: string[] }
+    >();
+
+    if (!isBackendLive) {
+      for (const r of rooms) {
+        map.set(r.roomNumber.toLowerCase(), {
+          roomNumber: r.roomNumber,
+          building: r.building,
+          totalIncidents: 0,
+          equipment: [...r.equipment],
+        });
+      }
     }
+
     for (const t of tickets) {
-      const key = t.roomNumber.toLowerCase();
+      const label = (t.roomNumber || 'Unspecified').trim();
+      const key = label.toLowerCase();
       const existing = map.get(key);
       if (existing) {
         existing.totalIncidents += 1;
+        if (t.category && !existing.equipment.includes(t.category)) {
+          existing.equipment.push(t.category);
+        }
       } else {
         map.set(key, {
-          roomNumber: t.roomNumber,
-          building: t.building,
+          roomNumber: label,
+          building: t.building || 'Campus',
           totalIncidents: 1,
           equipment: [t.category],
         });
       }
     }
-    return Array.from(map.values()).sort((a, b) => b.totalIncidents - a.totalIncidents);
-  }, [tickets, rooms]);
+
+    return Array.from(map.values())
+      .filter((r) => r.totalIncidents > 0)
+      .sort((a, b) => b.totalIncidents - a.totalIncidents);
+  }, [tickets, rooms, isBackendLive]);
 
   // 2. Department Breakdown
   const departmentCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const t of tickets) {
-      counts[t.recommendedDepartment] = (counts[t.recommendedDepartment] || 0) + 1;
+      const dept = t.recommendedDepartment || 'General Administration';
+      counts[dept] = (counts[dept] || 0) + 1;
     }
     return Object.entries(counts).sort((a, b) => b[1] - a[1]);
   }, [tickets]);
@@ -106,7 +153,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const t of tickets) {
-      counts[t.category] = (counts[t.category] || 0) + 1;
+      const cat = t.category || 'Other';
+      counts[cat] = (counts[cat] || 0) + 1;
     }
     return Object.entries(counts).sort((a, b) => b[1] - a[1]);
   }, [tickets]);
@@ -122,18 +170,43 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
     return counts;
   }, [tickets]);
 
+  // 5. Monthly Ticket Trends
+  const monthlyTrends = useMemo(() => {
+    const buckets: Record<string, { label: string; count: number; sortKey: string }> = {};
+    for (const t of tickets) {
+      const ms = parseTimestampMs(t.reportedAt);
+      if (ms !== null) {
+        const d = new Date(ms);
+        const sortKey = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+        const label = d.toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+        if (!buckets[sortKey]) {
+          buckets[sortKey] = { label, count: 0, sortKey };
+        }
+        buckets[sortKey].count++;
+      } else {
+        if (!buckets['unclassified']) {
+          buckets['unclassified'] = { label: 'Other Dates', count: 0, sortKey: '0000-00' };
+        }
+        buckets['unclassified'].count++;
+      }
+    }
+    return Object.values(buckets).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  }, [tickets]);
+
+  const maxMonthlyCount = Math.max(1, ...monthlyTrends.map((m) => m.count));
+
   return (
     <div className="space-y-6">
       {/* Analytics Top Banner */}
-      <div className="p-5 bg-white rounded-lg border border-slate-200">
+      <div className="p-5 bg-white rounded-lg border border-slate-200 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div>
             <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
               <BarChart3 className="w-5 h-5 text-blue-600" />
-              Campus Infrastructure Analytics & SLA Performance
+              Campus Infrastructure Analytics &amp; SLA Performance
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Aggregated dynamically across {tickets.length} tracked ticket(s) (4h SLA target).
+              Aggregated dynamically across {tickets.length} tracked ticket(s) ({SLA_TARGET_HOURS}h SLA target).
             </p>
           </div>
           <div className="flex items-center gap-2 text-xs">
@@ -150,10 +223,38 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
             </span>
           </div>
         </div>
+
+        {/* Summary KPI Strip */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 border-t border-slate-100 text-xs">
+          <div className="p-3 bg-slate-50 rounded border border-slate-200">
+            <span className="text-slate-500 block">Total Tickets</span>
+            <span className="text-lg font-bold font-mono text-slate-900 tabular-nums">
+              {tickets.length}
+            </span>
+          </div>
+          <div className="p-3 bg-slate-50 rounded border border-slate-200">
+            <span className="text-slate-500 block">Resolution Rate</span>
+            <span className="text-lg font-bold font-mono text-emerald-700 tabular-nums">
+              {slaMetrics.resolutionRatePct}%
+            </span>
+          </div>
+          <div className="p-3 bg-slate-50 rounded border border-slate-200">
+            <span className="text-slate-500 block">Open Tickets</span>
+            <span className="text-lg font-bold font-mono text-amber-700 tabular-nums">
+              {slaMetrics.openTicketCount}
+            </span>
+          </div>
+          <div className="p-3 bg-slate-50 rounded border border-slate-200">
+            <span className="text-slate-500 block">Avg Resolution Time</span>
+            <span className="text-lg font-bold font-mono text-blue-700 tabular-nums">
+              {slaMetrics.overallAvgHours}
+            </span>
+          </div>
+        </div>
       </div>
 
-      {/* 4 Average Resolution Time Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* 6 Department Average Resolution Time Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <div className="p-4 bg-white rounded-lg border border-slate-200">
           <div className="flex items-center justify-between text-slate-500 text-xs mb-1">
             <span>Classroom Supplies SLA</span>
@@ -165,16 +266,16 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
 
         <div className="p-4 bg-white rounded-lg border border-slate-200">
           <div className="flex items-center justify-between text-slate-500 text-xs mb-1">
-            <span>IT & AV Support SLA</span>
+            <span>IT &amp; AV Support SLA</span>
             <Clock className="w-4 h-4 text-blue-600" />
           </div>
           <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">{slaMetrics.itAvAvg}</div>
-          <p className="text-[11px] text-slate-500 mt-1">Measured projector & AV triage</p>
+          <p className="text-[11px] text-slate-500 mt-1">Measured projector &amp; AV triage</p>
         </div>
 
         <div className="p-4 bg-white rounded-lg border border-slate-200">
           <div className="flex items-center justify-between text-slate-500 text-xs mb-1">
-            <span>Housekeeping & Sanitation</span>
+            <span>Housekeeping &amp; Sanitation</span>
             <Clock className="w-4 h-4 text-cyan-600" />
           </div>
           <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">{slaMetrics.housekeepingAvg}</div>
@@ -183,12 +284,71 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
 
         <div className="p-4 bg-white rounded-lg border border-slate-200">
           <div className="flex items-center justify-between text-slate-500 text-xs mb-1">
-            <span>Facilities & Physical Plant</span>
+            <span>Facilities &amp; Physical Plant</span>
             <Clock className="w-4 h-4 text-amber-600" />
           </div>
           <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">{slaMetrics.facilitiesAvg}</div>
-          <p className="text-[11px] text-slate-500 mt-1">Measured furniture & HVAC repair</p>
+          <p className="text-[11px] text-slate-500 mt-1">Measured furniture &amp; HVAC repair</p>
         </div>
+
+        <div className="p-4 bg-white rounded-lg border border-slate-200">
+          <div className="flex items-center justify-between text-slate-500 text-xs mb-1">
+            <span>Electrical Maintenance SLA</span>
+            <Clock className="w-4 h-4 text-yellow-600" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">{slaMetrics.electricalAvg}</div>
+          <p className="text-[11px] text-slate-500 mt-1">Measured wiring, breakers &amp; lighting</p>
+        </div>
+
+        <div className="p-4 bg-white rounded-lg border border-slate-200">
+          <div className="flex items-center justify-between text-slate-500 text-xs mb-1">
+            <span>Plumbing / Maintenance SLA</span>
+            <Clock className="w-4 h-4 text-teal-600" />
+          </div>
+          <div className="text-2xl font-bold font-mono text-slate-900 tabular-nums">{slaMetrics.plumbingAvg}</div>
+          <p className="text-[11px] text-slate-500 mt-1">Measured pipe, faucet &amp; leak repair</p>
+        </div>
+      </div>
+
+      {/* MONTHLY TICKET TRENDS */}
+      <div className="p-5 bg-white rounded-lg border border-slate-200 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+            <Calendar className="w-4 h-4 text-blue-600" />
+            Monthly Ticket Volume Trends
+          </h3>
+          <span className="text-[11px] text-slate-400 font-mono">
+            {monthlyTrends.length} period(s)
+          </span>
+        </div>
+
+        {monthlyTrends.length === 0 ? (
+          <p className="text-xs text-slate-500">
+            No dated tickets available yet to plot monthly trends.
+          </p>
+        ) : (
+          <div className="space-y-2.5">
+            {monthlyTrends.map((m) => {
+              const widthPct = Math.round((m.count / maxMonthlyCount) * 100);
+              return (
+                <div key={m.sortKey} className="grid grid-cols-12 items-center gap-3 text-xs">
+                  <span className="col-span-3 sm:col-span-2 font-mono font-medium text-slate-700">
+                    {m.label}
+                  </span>
+                  <div className="col-span-7 sm:col-span-8 bg-slate-100 rounded-full h-2.5 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-blue-600"
+                      style={{ width: `${Math.max(6, widthPct)}%` }}
+                    />
+                  </div>
+                  <span className="col-span-2 text-right font-mono font-bold text-slate-800 tabular-nums">
+                    {m.count} ticket(s)
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -202,41 +362,47 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
             <span className="text-[11px] text-slate-400 font-mono">Live Count</span>
           </div>
 
-          <div className="space-y-3">
-            {rankedRooms.slice(0, 6).map((r, i) => {
-              const maxVal = Math.max(rankedRooms[0]?.totalIncidents || 1, 1);
-              const pct = Math.round((r.totalIncidents / maxVal) * 100);
+          {rankedRooms.length === 0 ? (
+            <p className="text-xs text-slate-500">
+              No room incident records available yet.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {rankedRooms.slice(0, 6).map((r, i) => {
+                const maxVal = Math.max(rankedRooms[0]?.totalIncidents || 1, 1);
+                const pct = Math.round((r.totalIncidents / maxVal) * 100);
 
-              return (
-                <div key={r.roomNumber} className="space-y-1 text-xs">
-                  <div className="flex items-center justify-between font-medium">
-                    <span className="text-slate-900 font-bold font-mono">
-                      #{i + 1} {r.roomNumber}{' '}
-                      <span className="text-slate-500 font-normal">({r.building})</span>
-                    </span>
-                    <span className="font-mono text-slate-700 font-bold tabular-nums">
-                      {r.totalIncidents} ticket(s)
-                    </span>
+                return (
+                  <div key={r.roomNumber} className="space-y-1 text-xs">
+                    <div className="flex items-center justify-between font-medium">
+                      <span className="text-slate-900 font-bold font-mono">
+                        #{i + 1} {r.roomNumber}{' '}
+                        <span className="text-slate-500 font-normal">({r.building})</span>
+                      </span>
+                      <span className="font-mono text-slate-700 font-bold tabular-nums">
+                        {r.totalIncidents} ticket(s)
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${
+                          i === 0
+                            ? 'bg-rose-500'
+                            : i === 1
+                            ? 'bg-amber-500'
+                            : 'bg-blue-600'
+                        }`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    <div className="text-[10px] text-slate-500">
+                      Tracked domains: {r.equipment.slice(0, 3).join(', ')}
+                    </div>
                   </div>
-                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full ${
-                        i === 0
-                          ? 'bg-rose-500'
-                          : i === 1
-                          ? 'bg-amber-500'
-                          : 'bg-blue-600'
-                      }`}
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                  <div className="text-[10px] text-slate-500">
-                    Tracked equipment: {r.equipment.slice(0, 2).join(', ')}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Most Reported Departments */}
@@ -249,28 +415,34 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
             <span className="text-[11px] text-slate-400 font-mono">Active Load</span>
           </div>
 
-          <div className="space-y-3">
-            {departmentCounts.map(([deptName, count]) => {
-              const pct = Math.round((count / (tickets.length || 1)) * 100);
+          {departmentCounts.length === 0 ? (
+            <p className="text-xs text-slate-500">
+              No department workload data available yet.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {departmentCounts.map(([deptName, count]) => {
+                const pct = Math.round((count / (tickets.length || 1)) * 100);
 
-              return (
-                <div key={deptName} className="space-y-1 text-xs">
-                  <div className="flex items-center justify-between font-medium">
-                    <span className="text-slate-900 font-semibold">{deptName}</span>
-                    <span className="font-mono text-slate-700 font-bold tabular-nums">
-                      {count} tickets ({pct}%)
-                    </span>
+                return (
+                  <div key={deptName} className="space-y-1 text-xs">
+                    <div className="flex items-center justify-between font-medium">
+                      <span className="text-slate-900 font-semibold">{deptName}</span>
+                      <span className="font-mono text-slate-700 font-bold tabular-nums">
+                        {count} tickets ({pct}%)
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-blue-600"
+                        style={{ width: `${Math.max(8, pct)}%` }}
+                      />
+                    </div>
                   </div>
-                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-blue-600"
-                      style={{ width: `${Math.max(8, pct)}%` }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Common Issue Categories */}
@@ -282,28 +454,34 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
             </h3>
           </div>
 
-          <div className="space-y-3">
-            {categoryCounts.map(([catName, count]) => {
-              const pct = Math.round((count / (tickets.length || 1)) * 100);
+          {categoryCounts.length === 0 ? (
+            <p className="text-xs text-slate-500">
+              No category breakdown available yet.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {categoryCounts.map(([catName, count]) => {
+                const pct = Math.round((count / (tickets.length || 1)) * 100);
 
-              return (
-                <div key={catName} className="space-y-1 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-900 font-medium">{catName}</span>
-                    <span className="font-mono font-bold text-slate-700 tabular-nums">
-                      {count} ({pct}%)
-                    </span>
+                return (
+                  <div key={catName} className="space-y-1 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-900 font-medium">{catName}</span>
+                      <span className="font-mono font-bold text-slate-700 tabular-nums">
+                        {count} ({pct}%)
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-purple-600"
+                        style={{ width: `${Math.max(6, pct)}%` }}
+                      />
+                    </div>
                   </div>
-                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-purple-600"
-                      style={{ width: `${Math.max(6, pct)}%` }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Priority Breakdown & Safety Impact */}
@@ -311,7 +489,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
           <div className="flex items-center justify-between">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
               <TrendingUp className="w-4 h-4 text-emerald-600" />
-              Priority Distribution & Urgency
+              Priority Distribution &amp; Urgency
             </h3>
           </div>
 
@@ -351,8 +529,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ tickets, rooms }) 
 
           <div className="p-3 bg-slate-50 border border-slate-200 rounded text-slate-600 text-xs leading-relaxed">
             <strong className="text-slate-800">AI Priority Engine Note: </strong>
-            Critical priorities are immediately routed with automated SMS simulation to department
-            safety coordinators, bypassing ordinary triage queues.
+            Critical priorities escalate immediately for priority safety review, bypassing ordinary triage queues.
           </div>
         </div>
       </div>

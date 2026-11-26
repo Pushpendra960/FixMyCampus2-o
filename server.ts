@@ -15,7 +15,8 @@ const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const parsedPort = Number.parseInt(process.env.PORT || '', 10);
+const PORT = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 3000;
 const GEMINI_MODEL = 'gemini-4-hydrogen';
 const APPS_SCRIPT_TIMEOUT_MS = 20000;
 const GEMINI_TIMEOUT_MS = 25000;
